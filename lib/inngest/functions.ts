@@ -112,7 +112,25 @@ export const sendDailyNewsSummary = inngest.createFunction(
           }
 
           perUser.push({ user, articles });
-    // Step #3: Summarize news via Gemini API
+        } catch (error) {
+          console.error(
+            `❌ Failed to fetch news for user ${user.email}:`,
+            error
+          );
+          // Continue with other users even if one fails
+          perUser.push({ user, articles: [] });
+        }
+      }
+
+      return perUser;
+    });
+
+    // Step 3: Summarize news via Gemini API
+    const userNewsSummaries: Array<{
+      user: UserForNewsEmail;
+      newsContent: string | null;
+    }> = [];
+
     for (const [index, { user, articles }] of results.entries()) {
       try {
         const prompt = NEWS_SUMMARY_EMAIL_PROMPT.replace(
@@ -123,12 +141,6 @@ export const sendDailyNewsSummary = inngest.createFunction(
         const newsContent = await step.run(
           `summarize-news-${index}`,
           async () => {
-            // 🔍 Log the actual API key being used
-            //    console.log(
-            //       "🔐 GEMINI_API_KEY in daily-news-summary:",
-            //       process.env.GEMINI_API_KEY
-            //     );
-
             if (!process.env.GEMINI_API_KEY) {
               throw new Error("❌ Missing GEMINI_API_KEY in environment");
             }
@@ -154,63 +166,78 @@ export const sendDailyNewsSummary = inngest.createFunction(
             );
 
             if (!res.ok) {
-              console.error(
-                `Gemini API error for ${user.email}:`,
-                await res.text()
-              );
+              const errorText = await res.text();
+              console.error(`Gemini API error for ${user.email}:`, errorText);
               return null;
             }
 
             const json = await res.json();
             return (
               json.candidates?.[0]?.content?.parts?.[0]?.text ??
-              "No market news."
+              "No market news available today."
             );
           }
         );
 
         userNewsSummaries.push({ user, newsContent });
       } catch (e) {
-        console.error("Failed to summarize news", e);
+        console.error(`❌ Failed to summarize news for ${user.email}:`, e);
         userNewsSummaries.push({ user, newsContent: null });
       }
     }
 
     // Step 4: Send the emails
     await step.run("send-news-emails", async () => {
-      await Promise.all(
-        userNewsSummaries.map(async ({ user, newsContent }) => {
-          console.log("📧 Preparing to send daily news email");
+      const emailPromises = userNewsSummaries.map(
+        async ({ user, newsContent }) => {
+          console.log(`📧 Preparing to send daily news email to ${user.email}`);
 
           if (!newsContent) {
-            console.warn("⚠️ No news content for user, skipping...");
+            console.warn(`⚠️ No news content for ${user.email}, skipping...`);
             return false;
           }
 
           try {
-            console.log("➡️ Attempting to send daily news email", {
-              preview: newsContent.slice(0, 80) + "...",
-            });
+            console.log(
+              `➡️ Attempting to send daily news email to ${user.email}`,
+              {
+                preview: newsContent.slice(0, 80) + "...",
+              }
+            );
 
             await sendNewsSummaryEmail({
               email: user.email,
               date: getFormattedTodayDate(),
               newsContent,
             });
+
+            console.log(
+              `✅ Successfully sent daily news email to ${user.email}`
+            );
+            return true;
           } catch (err) {
-            console.error("❌ Failed to send daily news email", err);
+            console.error(
+              `❌ Failed to send daily news email to ${user.email}:`,
+              err
+            );
+            return false;
           }
-        })
+        }
       );
-    });
-          }
-        })
+
+      const results = await Promise.allSettled(emailPromises);
+      const successfulSends = results.filter(
+        (result) => result.status === "fulfilled" && result.value === true
+      ).length;
+
+      console.log(
+        `📊 Email sending completed: ${successfulSends}/${userNewsSummaries.length} successful`
       );
     });
 
     return {
       success: true,
-      message: "✅ Daily news summary emails sent successfully",
+      message: "✅ Daily news summary emails processed successfully",
     };
   }
 );
