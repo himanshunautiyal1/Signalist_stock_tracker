@@ -112,23 +112,8 @@ export const sendDailyNewsSummary = inngest.createFunction(
           }
 
           perUser.push({ user, articles });
-        } catch (e) {
-          console.error("❌ Error preparing user news for", user.email, e);
-          perUser.push({ user, articles: [] });
-        }
-      }
-
-      return perUser;
-    });
-
-    // Step 3: Summarize news via Gemini API manually
-    const userNewsSummaries: {
-      user: UserForNewsEmail;
-      newsContent: string | null;
-    }[] = [];
-
     // Step #3: Summarize news via Gemini API
-    for (const { user, articles } of results) {
+    for (const [index, { user, articles }] of results.entries()) {
       try {
         const prompt = NEWS_SUMMARY_EMAIL_PROMPT.replace(
           "{{newsData}}",
@@ -136,7 +121,7 @@ export const sendDailyNewsSummary = inngest.createFunction(
         );
 
         const newsContent = await step.run(
-          `summarize-news-${user.email}`,
+          `summarize-news-${index}`,
           async () => {
             // 🔍 Log the actual API key being used
             //    console.log(
@@ -186,7 +171,7 @@ export const sendDailyNewsSummary = inngest.createFunction(
 
         userNewsSummaries.push({ user, newsContent });
       } catch (e) {
-        console.error("Failed to summarize news for:", user.email, e);
+        console.error("Failed to summarize news", e);
         userNewsSummaries.push({ user, newsContent: null });
       }
     }
@@ -195,18 +180,17 @@ export const sendDailyNewsSummary = inngest.createFunction(
     await step.run("send-news-emails", async () => {
       await Promise.all(
         userNewsSummaries.map(async ({ user, newsContent }) => {
-          console.log(`📧 Preparing to send email to: ${user.email}`);
+          console.log("📧 Preparing to send daily news email");
 
           if (!newsContent) {
-            console.warn(`⚠️ No news content for ${user.email}, skipping...`);
+            console.warn("⚠️ No news content for user, skipping...");
             return false;
           }
 
           try {
-            console.log(
-              `➡️ Attempting to send to ${user.email} with content:`,
-              newsContent.slice(0, 80) + "..."
-            );
+            console.log("➡️ Attempting to send daily news email", {
+              preview: newsContent.slice(0, 80) + "...",
+            });
 
             await sendNewsSummaryEmail({
               email: user.email,
@@ -214,7 +198,11 @@ export const sendDailyNewsSummary = inngest.createFunction(
               newsContent,
             });
           } catch (err) {
-            console.error(`❌ Failed to send email to ${user.email}:`, err);
+            console.error("❌ Failed to send daily news email", err);
+          }
+        })
+      );
+    });
           }
         })
       );
